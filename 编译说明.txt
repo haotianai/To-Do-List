@@ -1,0 +1,7 @@
+编译
+g++ -o TodoList To-Do-List.cpp -lgdi32 -lgdiplus -lole32 -lurlmon -lcomctl32 -mwindows
+
+
+静态编译
+g++ -municode -DUNICODE -D_UNICODE -finput-charset=UTF-8 -fexec-charset=UTF-8 -o TodoList.exe To-Do-List.cpp -lgdi32 -lgdiplus -lole32 -luuid -lshell32 -lurlmon -lcomctl32 -mwindows -static
+

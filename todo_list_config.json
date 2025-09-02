@@ -1,0 +1,23 @@
+﻿{
+  "nextId": 3,
+  "tasks": [
+    {
+      "id": 1,
+      "title": "测试",
+      "description": "测试",
+      "status": 2,
+      "priority": 1,
+      "createTime": "2025-09-03 02:52:32",
+      "completeTime": "2025-09-03 02:52:37"
+    },
+    {
+      "id": 2,
+      "title": "测试2",
+      "description": "测试",
+      "status": 0,
+      "priority": 1,
+      "createTime": "2025-09-03 02:52:35",
+      "completeTime": ""
+    }
+  ]
+}
