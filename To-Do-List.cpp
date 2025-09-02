@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <commctrl.h>
+#include <shellapi.h>
 #include <string>
 #include <vector>
 #include <sstream>
@@ -36,6 +37,11 @@ using namespace Gdiplus;
 #define ID_BUTTON_CANCEL    1007
 #define ID_CHECK_AUTOSTART  1008
 
+// 托盘图标相关
+#define WM_TRAYICON         (WM_USER + 1)
+#define ID_TRAY_SHOW        2001
+#define ID_TRAY_EXIT        2002
+
 // 全局变量
 HWND g_hWnd = NULL;
 HWND g_hBtnAdd = NULL;
@@ -47,6 +53,8 @@ HWND g_hScrollWnd = NULL;
 HWND g_hCheckAutoStart = NULL;
 std::string g_statusText = "欢迎使用待办清单管理工具";
 std::mutex g_dataMutex;
+NOTIFYICONDATAW g_trayIcon = {0};
+bool g_isTrayIconAdded = false;
 
 // 编辑状态
 bool g_isEditing = false;
@@ -189,6 +197,9 @@ bool IsAutoStartEnabled();
 void SetAutoStart(bool enable);
 void SaveWindowConfig();
 bool LoadWindowConfig();
+void AddTrayIcon(HWND hwnd);
+void RemoveTrayIcon();
+void ShowTrayMenu(HWND hwnd);
 
 
 // JSON配置文件路径
@@ -1184,12 +1195,23 @@ void HideWindowToEdge(HWND hwnd) {
 
     // 移动到隐藏位置
     SetWindowPos(hwnd, NULL, newX, newY, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    
+    // 从任务栏隐藏窗口
+    ShowWindow(hwnd, SW_HIDE);
+    SetWindowLong(hwnd, GWL_EXSTYLE, GetWindowLong(hwnd, GWL_EXSTYLE) | WS_EX_TOOLWINDOW);
+    ShowWindow(hwnd, SW_SHOW);
+    
     g_isHidden = true;
 }
 
 // 显示窗口
 void ShowWindowFromEdge(HWND hwnd) {
     if (!g_isHidden) return;
+
+    // 恢复任务栏显示
+    ShowWindow(hwnd, SW_HIDE);
+    SetWindowLong(hwnd, GWL_EXSTYLE, GetWindowLong(hwnd, GWL_EXSTYLE) & ~WS_EX_TOOLWINDOW);
+    ShowWindow(hwnd, SW_SHOW);
 
     RECT windowRect;
     GetWindowRect(hwnd, &windowRect);
@@ -1217,8 +1239,10 @@ void ShowWindowFromEdge(HWND hwnd) {
             break;
     }
 
-    // 移动到显示位置
-    SetWindowPos(hwnd, NULL, newX, newY, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    // 移动到显示位置，并置顶窗口
+    SetWindowPos(hwnd, HWND_TOPMOST, newX, newY, 0, 0, SWP_NOSIZE);
+    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);
+    SetForegroundWindow(hwnd);
     g_isHidden = false;
 }
 
@@ -1427,6 +1451,59 @@ void SetAutoStart(bool enable) {
     }
 }
 
+// 添加托盘图标
+void AddTrayIcon(HWND hwnd) {
+    if (g_isTrayIconAdded) return;
+    
+    g_trayIcon.cbSize = sizeof(NOTIFYICONDATAW);
+    g_trayIcon.hWnd = hwnd;
+    g_trayIcon.uID = 1;
+    g_trayIcon.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g_trayIcon.uCallbackMessage = WM_TRAYICON;
+    
+    // 使用系统默认图标或加载自定义图标
+    HICON hIcon = (HICON)LoadImageW(NULL, L"icon.ico", IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
+    if (!hIcon) {
+        hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    }
+    g_trayIcon.hIcon = hIcon;
+    
+    // 设置提示文字
+    lstrcpyW(g_trayIcon.szTip, L"待办清单管理工具");
+    
+    Shell_NotifyIconW(NIM_ADD, &g_trayIcon);
+    g_isTrayIconAdded = true;
+}
+
+// 移除托盘图标
+void RemoveTrayIcon() {
+    if (!g_isTrayIconAdded) return;
+    
+    Shell_NotifyIconW(NIM_DELETE, &g_trayIcon);
+    g_isTrayIconAdded = false;
+}
+
+// 显示托盘菜单
+void ShowTrayMenu(HWND hwnd) {
+    POINT pt;
+    GetCursorPos(&pt);
+    
+    HMENU hMenu = CreatePopupMenu();
+    if (hMenu) {
+        AppendMenuW(hMenu, MF_STRING, ID_TRAY_SHOW, L"显示窗口");
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"退出");
+        
+        // 确保菜单在前台显示
+        SetForegroundWindow(hwnd);
+        
+        TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+                      pt.x, pt.y, 0, hwnd, NULL);
+        
+        DestroyMenu(hMenu);
+    }
+}
+
 // 保存窗口配置
 void SaveWindowConfig() {
     std::ofstream file(WINDOW_CONFIG_FILE, std::ios::binary);
@@ -1546,6 +1623,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             GdiplusStartupInput gdiplusStartupInput;
             ULONG_PTR gdiplusToken;
             GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
+            
+            // 添加托盘图标
+            AddTrayIcon(hwnd);
 
             // 获取客户区大小用于响应式布局
             RECT clientRect;
@@ -1683,8 +1763,43 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                         SetAutoStart(isChecked);
                     }
                     break;
+                case ID_TRAY_SHOW:
+                    // 显示窗口
+                    ShowWindow(hwnd, SW_RESTORE);
+                    SetForegroundWindow(hwnd);
+                    if (g_isHidden) {
+                        ShowWindowFromEdge(hwnd);
+                    }
+                    break;
+                case ID_TRAY_EXIT:
+                    // 退出程序
+                    DestroyWindow(hwnd);
+                    break;
                 default:
                     return DefWindowProc(hwnd, uMsg, wParam, lParam);
+            }
+        }
+        break;
+    
+    case WM_TRAYICON:
+        {
+            switch (lParam) {
+                case WM_LBUTTONUP:
+                    // 左键点击托盘图标，显示/隐藏窗口
+                    if (IsWindowVisible(hwnd)) {
+                        ShowWindow(hwnd, SW_HIDE);
+                    } else {
+                        ShowWindow(hwnd, SW_RESTORE);
+                        SetForegroundWindow(hwnd);
+                        if (g_isHidden) {
+                            ShowWindowFromEdge(hwnd);
+                        }
+                    }
+                    break;
+                case WM_RBUTTONUP:
+                    // 右键点击托盘图标，显示菜单
+                    ShowTrayMenu(hwnd);
+                    break;
             }
         }
         break;
@@ -1966,6 +2081,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     case WM_DESTROY:
         // 保存窗口配置
         SaveWindowConfig();
+        // 移除托盘图标
+        RemoveTrayIcon();
+        // 移除鼠标钩子
+        if (g_mouseHook) {
+            UnhookWindowsHookEx(g_mouseHook);
+        }
         PostQuitMessage(0);
         break;
 
@@ -2049,9 +2170,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         }
     }
 
-    // 创建窗口 - 完全使用Unicode API，支持拉伸但无最大化按钮
+    // 创建窗口 - 使用WS_EX_TOOLWINDOW使窗口不在任务栏显示
     g_hWnd = CreateWindowExW(
-        0,
+        WS_EX_TOOLWINDOW,  // 不在任务栏显示
         CLASS_NAME,
         UIConfig::windowTitle,  // 使用硬编码的标题
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX,  // 可拉伸窗口，但去掉最大化按钮
